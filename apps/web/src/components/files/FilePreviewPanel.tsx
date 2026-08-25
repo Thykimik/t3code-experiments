@@ -41,7 +41,7 @@ import { projectEnvironment } from "~/state/projects";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
-import FileBrowserPanel from "./FileBrowserPanel";
+import FileBrowserPanel, { type FileBrowserPanelHandle } from "./FileBrowserPanel";
 import {
   type FileCommentAnnotationEntry,
   type FileCommentAnnotationGroup,
@@ -78,6 +78,8 @@ interface FilePreviewPanelProps {
   revealRequestId: number;
   onOpenFile: (relativePath: string) => void;
   onPendingChange: (relativePath: string, pending: boolean) => void;
+  /** Switches the right panel to the file-browser-only surface, closing the open file. */
+  onOpenFileBrowser: () => void;
 }
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
@@ -768,6 +770,7 @@ export default function FilePreviewPanel({
   revealRequestId,
   onOpenFile,
   onPendingChange,
+  onOpenFileBrowser,
 }: FilePreviewPanelProps) {
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
@@ -797,6 +800,7 @@ export default function FilePreviewPanel({
     null,
   );
   const breadcrumbRef = useRef<HTMLDivElement>(null);
+  const fileBrowserRef = useRef<FileBrowserPanelHandle>(null);
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
   // A reveal still wins over the preference: the line only exists in the source.
   const renderMarkdown =
@@ -820,6 +824,22 @@ export default function FilePreviewPanel({
     currentCrumb?.scrollIntoView({ block: "nearest", inline: "end" });
   }, [relativePath]);
 
+  // Opening a file always collapses the explorer, maximizing reading space.
+  // The FolderTree toggle and the breadcrumb are the only ways back in.
+  useEffect(() => {
+    if (relativePath === null) return;
+    setExplorerOpen((current) => {
+      if (!current) return current;
+      try {
+        setLocalStorageItem(FILE_EXPLORER_STORAGE_KEY, false, Schema.Boolean);
+      } catch (error) {
+        console.error(error);
+      }
+      return false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relativePath]);
+
   const toggleExplorer = () => {
     setExplorerOpen((current) => {
       const next = !current;
@@ -831,6 +851,36 @@ export default function FilePreviewPanel({
       return next;
     });
   };
+
+  const handleBreadcrumbCrumbClick = useCallback(
+    (crumb: { path: string }) => {
+      // Clicking a breadcrumb segment always drops back to the file browser:
+      // it's a "go look at this directory" action, not a split view.
+      onOpenFileBrowser();
+      setExplorerOpen((current) => {
+        if (current) return current;
+        try {
+          setLocalStorageItem(FILE_EXPLORER_STORAGE_KEY, true, Schema.Boolean);
+        } catch (error) {
+          console.error(error);
+        }
+        return true;
+      });
+      // The explorer/right-panel switch hasn't committed yet, so the ref isn't
+      // populated on the first frame. Retry across a few frames until it does.
+      let attemptsLeft = 10;
+      const tryReveal = () => {
+        if (fileBrowserRef.current) {
+          fileBrowserRef.current.revealDirectory(crumb.path);
+          return;
+        }
+        attemptsLeft -= 1;
+        if (attemptsLeft > 0) requestAnimationFrame(tryReveal);
+      };
+      requestAnimationFrame(tryReveal);
+    },
+    [onOpenFileBrowser],
+  );
 
   const handleOpenInBrowser = useCallback(() => {
     if (!absolutePath || !environmentHttpBaseUrl) return;
@@ -883,20 +933,23 @@ export default function FilePreviewPanel({
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <span
-                          className={cn(
-                            "max-w-40 truncate",
-                            crumb.kind === "file"
-                              ? "font-medium text-foreground"
-                              : "text-muted-foreground",
-                          )}
-                        />
+                        crumb.kind === "file" ? (
+                          <span className="max-w-40 truncate font-medium text-foreground" />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleBreadcrumbCrumbClick(crumb)}
+                            className="max-w-40 cursor-pointer truncate rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          />
+                        )
                       }
                     >
                       {crumb.label}
                     </TooltipTrigger>
                     <TooltipPopup side="top" className="max-w-80">
-                      {crumb.path || projectName}
+                      {crumb.kind === "file"
+                        ? crumb.path || projectName
+                        : `Reveal ${crumb.path || projectName} in the file explorer`}
                     </TooltipPopup>
                   </Tooltip>
                 </div>
@@ -1073,6 +1126,7 @@ export default function FilePreviewPanel({
             )}
           >
             <FileBrowserPanel
+              ref={fileBrowserRef}
               key={`${environmentId}:${cwd}`}
               environmentId={environmentId}
               cwd={cwd}

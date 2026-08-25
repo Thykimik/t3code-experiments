@@ -6589,6 +6589,7 @@ function ChatViewContent(props: ChatViewProps) {
           revealRequestId={activeFileSurface?.revealRequestId ?? 0}
           onOpenFile={openFileSurface}
           onPendingChange={handleFilePendingChange}
+          onOpenFileBrowser={addFilesSurface}
         />
       </Suspense>
     ) : null
